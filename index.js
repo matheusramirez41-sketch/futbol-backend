@@ -6,8 +6,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Tu API Key de RapidAPI configurada directamente
-const API_KEY = process.env.API_KEY || 'd71e9537dbmsh26bc0ede22ab993p1c0f2fjsn17e6b52c14be';
+// TU API KEY PUESTA DIRECTAMENTE AQUÍ
+const API_KEY = 'd71e9537dbmsh26bc0ede22ab993p1c0f2fjsn17e6b52c14be';
 
 const apiCliente = axios.create({
   baseURL: 'https://v3.football.api-sports.io',
@@ -17,26 +17,37 @@ const apiCliente = axios.create({
   }
 });
 
-// Ruta para eventos en vivo
 app.get('/api/partido/directo', async (req, res) => {
   const fixtureId = req.query.id;
 
-  if (!fixtureId) {
-    return res.json({ status: 'error', mensaje: 'Falta el ID del partido', eventos: [] });
-  }
-
   try {
-    const [resEventos, resStats, resAlineaciones] = await Promise.allSettled([
-      apiCliente.get('/fixtures/events', { params: { fixture: fixtureId } }),
-      apiCliente.get('/fixtures/statistics', { params: { fixture: fixtureId } }),
-      apiCliente.get('/fixtures/lineups', { params: { fixture: fixtureId } })
-    ]);
+    const endpoint = fixtureId ? '/fixtures/events' : '/fixtures';
+    const params = fixtureId ? { fixture: fixtureId } : { live: 'all' };
 
-    const eventosRaw = resEventos.status === 'fulfilled' ? resEventos.value.data.response : [];
-    const statsRaw = resStats.status === 'fulfilled' ? resStats.value.data.response : [];
-    const alineacionesRaw = resAlineaciones.status === 'fulfilled' ? resAlineaciones.value.data.response : [];
+    const respuesta = await apiCliente.get(endpoint, { params });
+    const datosRaw = respuesta.data.response || [];
 
-    const eventosMapeados = Array.isArray(eventosRaw) ? eventosRaw.map((e, index) => ({
+    if (!fixtureId) {
+      const partidosEnVivo = datosRaw.map((item) => ({
+        id: item.fixture?.id?.toString(),
+        minuto: item.fixture?.status?.elapsed || 0,
+        equipoLocal: item.teams?.home?.name,
+        escudoLocal: item.teams?.home?.logo,
+        equipoVisitante: item.teams?.away?.name,
+        escudoVisitante: item.teams?.away?.logo,
+        golesLocal: item.goals?.home ?? 0,
+        golesVisitante: item.goals?.away ?? 0,
+        liga: item.league?.name
+      }));
+
+      return res.json({
+        status: 'ok',
+        tipo: 'lista_en_vivo',
+        partidos: partidosEnVivo
+      });
+    }
+
+    const eventosMapeados = datosRaw.map((e, index) => ({
       id: index.toString(),
       minuto: e.time?.elapsed || 0,
       tiempoAdicional: e.time?.extra || null,
@@ -46,32 +57,30 @@ app.get('/api/partido/directo', async (req, res) => {
       jugador: e.player?.name || '',
       equipo: e.team?.name || '',
       escudoEquipo: e.team?.logo || null
-    })) : [];
+    }));
 
     res.json({
       status: 'ok',
-      eventos: eventosMapeados,
-      estadisticas: statsRaw,
-      alineaciones: alineacionesRaw
+      tipo: 'eventos_partido',
+      eventos: eventosMapeados
     });
 
   } catch (error) {
-    console.error('Error al consultar la API:', error.message);
+    console.error('Error consultando la API:', error.message);
     res.json({
       status: 'error',
-      mensaje: 'Error procesando datos',
-      eventos: []
+      mensaje: 'Error conectando a los partidos',
+      eventos: [],
+      partidos: []
     });
   }
 });
 
 app.get('/', (req, res) => {
-  res.send('Backend de Fútbol funcionando con RapidAPI.');
+  res.send('Servidor activo con API Key lista.');
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Servidor corriendo en el puerto ${PORT}`);
+  console.log(`Servidor en puerto ${PORT}`);
 });
-
-      
