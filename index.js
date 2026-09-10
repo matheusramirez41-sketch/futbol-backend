@@ -6,65 +6,81 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Clave única de RapidAPI para todas tus suscripciones
 const RAPIDAPI_KEY = 'd71e9537dbmsh26bc0ede22ab993p1c0f2fjsn17e6b52c14be';
 
-// Función para generar los headers de RapidAPI según cada servicio
 const obtenerHeaders = (host) => ({
   'x-rapidapi-key': RAPIDAPI_KEY,
   'x-rapidapi-host': host
 });
 
-// 1. ENDPOINT DE PARTIDOS (Combina ESPN + RapidAPI: API-Football, Sofascore, FotMob y Flashscore)
 app.get('/api/partido/directo', async (req, res) => {
-  const fixtureId = req.query.id;
-
   try {
-    const [resEspn, resApiFootball, resSofascore, resFotmob, resFlashscore] = await Promise.allSettled([
-      axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard', { timeout: 4000 }),
-      axios.get('https://v3.football.api-sports.io/fixtures?live=all', { headers: obtenerHeaders('v3.football.api-sports.io'), timeout: 4000 }),
-      axios.get('https://sportapi7.p.rapidapi.com/api/v1/sport/football/events/live', { headers: obtenerHeaders('sportapi7.p.rapidapi.com'), timeout: 4000 }),
-      axios.get('https://fotmob-api.p.rapidapi.com/matches/live', { headers: obtenerHeaders('fotmob-api.p.rapidapi.com'), timeout: 4000 }),
-      axios.get('https://flashscore-api.p.rapidapi.com/live', { headers: obtenerHeaders('flashscore-api.p.rapidapi.com'), timeout: 4000 })
+    const [resEspn, resApiFootball] = await Promise.allSettled([
+      axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard', { timeout: 5000 }),
+      axios.get('https://v3.football.api-sports.io/fixtures?live=all', { headers: obtenerHeaders('v3.football.api-sports.io'), timeout: 5000 })
     ]);
 
     let listaPartidos = [];
 
-    // Mapear datos de ESPN
+    // Mapeo ESPN
     if (resEspn.status === 'fulfilled' && resEspn.value.data?.events) {
       resEspn.value.data.events.forEach(e => {
         const comp = e.competitions?.[0] || {};
         const local = comp.competitors?.find(c => c.homeAway === 'home');
         const visitante = comp.competitors?.find(c => c.homeAway === 'away');
+
+        const nomLocal = local?.team?.displayName || 'Local';
+        const nomVisitante = visitante?.team?.displayName || 'Visitante';
+        const gLocal = String(local?.score ?? '0');
+        const gVisitante = String(visitante?.score ?? '0');
+        const min = String(e.status?.displayClock || e.status?.type?.detail || 'En vivo');
+        const nomLiga = String(e.league?.name || 'Fútbol');
+
+        // Formato con marcador incluido en el nombre
+        const textoPartido = `${nomLocal} ${gLocal} - ${gVisitante} ${nomVisitante} (${min})`;
+
         listaPartidos.push({
           id: `espn-${e.id}`,
-          fuente: 'ESPN',
-          liga: e.league?.name || 'Fútbol',
-          minuto: e.status?.displayClock || '0\'',
-          equipoLocal: local?.team?.displayName || 'Local',
-          escudoLocal: local?.team?.logo || null,
-          golesLocal: local?.score || '0',
-          equipoVisitante: visitante?.team?.displayName || 'Visitante',
-          escudoVisitante: visitante?.team?.logo || null,
-          golesVisitante: visitante?.score || '0'
+          liga: nomLiga,
+          league: nomLiga,
+          title: nomLiga,
+          name: textoPartido,
+          descripcion: textoPartido,
+          equipoLocal: nomLocal,
+          golesLocal: gLocal,
+          equipoVisitante: nomVisitante,
+          golesVisitante: gVisitante,
+          minuto: min,
+          fuente: 'ESPN'
         });
       });
     }
 
-    // Mapear datos de API-Football
+    // Mapeo API-Football
     if (resApiFootball.status === 'fulfilled' && resApiFootball.value.data?.response) {
       resApiFootball.value.data.response.forEach(item => {
+        const nomLocal = item.teams?.home?.name || 'Local';
+        const nomVisitante = item.teams?.away?.name || 'Visitante';
+        const gLocal = String(item.goals?.home ?? 0);
+        const gVisitante = String(item.goals?.away ?? 0);
+        const min = `${item.fixture?.status?.elapsed || 0}'`;
+        const nomLiga = String(item.league?.name || 'Fútbol');
+
+        const textoPartido = `${nomLocal} ${gLocal} - ${gVisitante} ${nomVisitante} (${min})`;
+
         listaPartidos.push({
           id: `af-${item.fixture?.id}`,
-          fuente: 'API-Football',
-          liga: item.league?.name,
-          minuto: item.fixture?.status?.elapsed || 0,
-          equipoLocal: item.teams?.home?.name,
-          escudoLocal: item.teams?.home?.logo,
-          golesLocal: item.goals?.home ?? 0,
-          equipoVisitante: item.teams?.away?.name,
-          escudoVisitante: item.teams?.away?.logo,
-          golesVisitante: item.goals?.away ?? 0
+          liga: nomLiga,
+          league: nomLiga,
+          title: nomLiga,
+          name: textoPartido,
+          descripcion: textoPartido,
+          equipoLocal: nomLocal,
+          golesLocal: gLocal,
+          equipoVisitante: nomVisitante,
+          golesVisitante: gVisitante,
+          minuto: min,
+          fuente: 'API-Football'
         });
       });
     }
@@ -72,16 +88,15 @@ app.get('/api/partido/directo', async (req, res) => {
     res.json({
       status: 'ok',
       partidos: listaPartidos,
-      eventos: listaPartidos
+      eventos: listaPartidos,
+      data: listaPartidos
     });
 
   } catch (error) {
-    console.error('Error unificando las APIs:', error.message);
-    res.json({ status: 'error', mensaje: 'Error al consultar proveedores', partidos: [], eventos: [] });
+    res.json({ status: 'error', partidos: [], eventos: [], data: [] });
   }
 });
 
-// 2. ENDPOINT DE RADIOS (Radio Browser)
 app.get('/api/radios', async (req, res) => {
   const busqueda = req.query.q || 'deportes';
   try {
@@ -99,9 +114,9 @@ app.get('/api/radios', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('Servidor Multi-API RapidAPI Activo');
+  res.send('Servidor OK');
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
-      
+    
