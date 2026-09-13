@@ -6,7 +6,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Clave de API configurada directamente
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'd71e9537dbmsh26bc0ede22ab9p14b609jsn18ae6cfebc32';
 
 const obtenerHeaders = (host) => ({
@@ -14,11 +13,36 @@ const obtenerHeaders = (host) => ({
   'x-rapidapi-host': host
 });
 
+// Función auxiliar para traducir el estado del partido
+const traducirEstado = (estadoRaw) => {
+  if (!estadoRaw) return 'En vivo';
+  const e = estadoRaw.toUpperCase();
+  if (e.includes('FT') || e.includes('FINAL')) return 'Finalizado';
+  if (e.includes('HT') || e.includes('HALFTIME')) return 'Entretiempo';
+  if (e.includes('1H')) return '1ª Parte';
+  if (e.includes('2H')) return '2ª Parte';
+  if (e.includes('POSTPONED')) return 'Aplazado';
+  if (e.includes('CANCELLED')) return 'Cancelado';
+  if (e.includes('SCHEDULED') || e.includes('PRE')) return 'Por empezar';
+  return estadoRaw;
+};
+
+// Función para formatear el nombre de la liga
+const formatearLiga = (nombre) => {
+  if (!nombre) return 'Liga';
+  let limpia = nombre.replace(/\d{4}-\d{2,4}-?/g, '').replace(/-/g, ' ').trim();
+  if (limpia.toLowerCase().includes('laliga')) return 'LaLiga EA Sports';
+  if (limpia.toLowerCase().includes('premier')) return 'Premier League';
+  if (limpia.toLowerCase().includes('champions')) return 'UEFA Champions League';
+  return limpia.charAt(0).toUpperCase() + limpia.slice(1);
+};
+
 // Endpoint de Partidos en Directo
 app.get('/api/partido/directo', async (req, res) => {
   try {
     const [resEspn, resApiFootball] = await Promise.allSettled([
-      axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard'),
+      // Se añade lang=es para solicitar respuestas en español
+      axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?lang=es'),
       axios.get('https://v3.football.api-sports.io/fixtures?live=all', {
         headers: obtenerHeaders('v3.football.api-sports.io')
       })
@@ -41,16 +65,18 @@ app.get('/api/partido/directo', async (req, res) => {
           comentario: det.text || `${det.type?.text || 'Evento'} registrado en el partido.`
         }));
 
+        const minDetalle = e.status?.type?.shortDetail || e.status?.type?.detail || '';
+
         listaPartidos.push({
           id: `espn-${e.id}`,
-          liga: String(e.league?.name || e.season?.slug || 'Liga'),
+          liga: formatearLiga(e.league?.name || e.season?.slug),
           equipoLocal: local?.team?.displayName || 'Local',
           logoLocal: local?.team?.logo || null,
           golesLocal: String(local?.score ?? '0'),
           equipoVisitante: visitante?.team?.displayName || 'Visitante',
           logoVisitante: visitante?.team?.logo || null,
           golesVisitante: String(visitante?.score ?? '0'),
-          minuto: String(e.status?.type?.shortDetail || '0'),
+          minuto: traducirEstado(minDetalle),
           fuente: 'ESPN',
           hechos: hechos,
           estadisticas: (local?.statistics && visitante?.statistics) ? [
@@ -65,7 +91,7 @@ app.get('/api/partido/directo', async (req, res) => {
       resApiFootball.value.data.response.forEach(item => {
         const fixtureId = item.fixture?.id;
         const hechos = (item.events || []).map(ev => ({
-          minuto: `${ev.time?.elapsed || ''}`,
+          minuto: `${ev.time?.elapsed || ''}'`,
           tipo: ev.type || 'Evento',
           jugador: ev.player?.name || '',
           equipo: ev.team?.name || '',
@@ -73,16 +99,18 @@ app.get('/api/partido/directo', async (req, res) => {
           comentario: `${ev.type} de ${ev.player?.name || 'jugador'} (${ev.team?.name || ''})`
         }));
 
+        const estadoShort = item.fixture?.status?.short;
+
         listaPartidos.push({
           id: `af-${fixtureId}`,
-          liga: String(item.league?.name || 'API-Football'),
+          liga: formatearLiga(item.league?.name),
           equipoLocal: item.teams?.home?.name || 'Local',
           logoLocal: item.teams?.home?.logo || null,
           golesLocal: String(item.goals?.home ?? '0'),
           equipoVisitante: item.teams?.away?.name || 'Visitante',
           logoVisitante: item.teams?.away?.logo || null,
           golesVisitante: String(item.goals?.away ?? '0'),
-          minuto: `${item.fixture?.status?.elapsed || 0}'`,
+          minuto: traducirEstado(estadoShort) === 'En vivo' ? `${item.fixture?.status?.elapsed || 0}'` : traducirEstado(estadoShort),
           fuente: 'API-Football',
           hechos: hechos,
           estadisticas: null
@@ -99,7 +127,7 @@ app.get('/api/partido/directo', async (req, res) => {
 // Endpoint para la Tabla de Clasificación Real
 app.get('/api/clasificacion', async (req, res) => {
   try {
-    const response = await axios.get('https://site.api.espn.com/apis/v2/sports/soccer/esp.1/standings');
+    const response = await axios.get('https://site.api.espn.com/apis/v2/sports/soccer/esp.1/standings?lang=es');
     const standings = response.data?.children?.[0]?.standings?.entries || [];
 
     const tabla = standings.map(entry => {
@@ -126,4 +154,4 @@ app.get('/api/clasificacion', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
-            
+  
