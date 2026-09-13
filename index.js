@@ -6,13 +6,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'd71e9537dbmsh26bc0ede22ab9p1...'; // Tu clave aquí
+// Clave de API configurada directamente
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'd71e9537dbmsh26bc0ede22ab9p14b609jsn18ae6cfebc32';
 
 const obtenerHeaders = (host) => ({
   'x-rapidapi-key': RAPIDAPI_KEY,
   'x-rapidapi-host': host
 });
 
+// Endpoint de Partidos en Directo
 app.get('/api/partido/directo', async (req, res) => {
   try {
     const [resEspn, resApiFootball] = await Promise.allSettled([
@@ -24,37 +26,24 @@ app.get('/api/partido/directo', async (req, res) => {
 
     let listaPartidos = [];
 
-    // 1. MAPEO ESPN (Incluye Logos, Hechos/Eventos y Alineaciones sin gastar créditos)
     if (resEspn.status === 'fulfilled' && resEspn.value.data?.events) {
       resEspn.value.data.events.forEach(e => {
         const comp = e.competitions?.[0] || {};
         const local = comp.competitors?.find(c => c.homeAway === 'home');
         const visitante = comp.competitors?.find(c => c.homeAway === 'away');
 
-        // Mapear hechos/eventos (goles, tarjetas, etc.)
         const hechos = (comp.details || []).map(det => ({
-          minuto: det.clock?.displayValue || '',
-          tipo: det.type?.text || 'Evento',
+          minuto: det.clock?.displayValue || '•',
+          tipo: det.type?.text || 'Incidencia',
           jugador: det.athletesIn?.[0]?.displayName || det.team?.displayName || '',
-          equipo: det.team?.displayName || ''
-        }));
-
-        // Mapear alineaciones si están disponibles en ESPN
-        const alineaciones = comp.competitors?.map(c => ({
-          team: { name: c.team?.displayName, logo: c.team?.logo },
-          formation: c.formation || 'N/A',
-          startXI: (c.roster || []).map(p => ({
-            player: {
-              name: p.athlete?.displayName,
-              number: p.jersey,
-              pos: p.position?.abbreviation
-            }
-          }))
+          equipo: det.team?.displayName || '',
+          fotoJugador: det.athletesIn?.[0]?.headshot?.href || null,
+          comentario: det.text || `${det.type?.text || 'Evento'} registrado en el partido.`
         }));
 
         listaPartidos.push({
           id: `espn-${e.id}`,
-          liga: String(e.league?.name || e.season?.slug || 'ESPN League'),
+          liga: String(e.league?.name || e.season?.slug || 'Liga'),
           equipoLocal: local?.team?.displayName || 'Local',
           logoLocal: local?.team?.logo || null,
           golesLocal: String(local?.score ?? '0'),
@@ -64,25 +53,24 @@ app.get('/api/partido/directo', async (req, res) => {
           minuto: String(e.status?.type?.shortDetail || '0'),
           fuente: 'ESPN',
           hechos: hechos,
-          estadisticas: comp.statistics || null,
-          alineaciones: alineaciones.some(a => a.startXI.length > 0) ? alineaciones : null
+          estadisticas: (local?.statistics && visitante?.statistics) ? [
+            { statistics: local.statistics.map(s => ({ type: s.label || s.name, value: s.displayValue || s.value })) },
+            { statistics: visitante.statistics.map(s => ({ type: s.label || s.name, value: s.displayValue || s.value })) }
+          ] : null
         });
       });
     }
 
-    // 2. MAPEO API-FOOTBALL (Optimizado para no saturar la API)
     if (resApiFootball.status === 'fulfilled' && resApiFootball.value.data?.response) {
-      const partidosAF = resApiFootball.value.data.response;
-
-      partidosAF.forEach(item => {
+      resApiFootball.value.data.response.forEach(item => {
         const fixtureId = item.fixture?.id;
-
-        // Extraer hechos/eventos si la API los incluye directamente
         const hechos = (item.events || []).map(ev => ({
-          minuto: `${ev.time?.elapsed || ''}'`,
+          minuto: `${ev.time?.elapsed || ''}`,
           tipo: ev.type || 'Evento',
           jugador: ev.player?.name || '',
-          equipo: ev.team?.name || ''
+          equipo: ev.team?.name || '',
+          fotoJugador: null,
+          comentario: `${ev.type} de ${ev.player?.name || 'jugador'} (${ev.team?.name || ''})`
         }));
 
         listaPartidos.push({
@@ -97,26 +85,45 @@ app.get('/api/partido/directo', async (req, res) => {
           minuto: `${item.fixture?.status?.elapsed || 0}'`,
           fuente: 'API-Football',
           hechos: hechos,
-          estadisticas: null,
-          alineaciones: null
+          estadisticas: null
         });
       });
     }
 
-    res.json({
-      status: 'ok',
-      partidos: listaPartidos
+    res.json({ status: 'ok', partidos: listaPartidos });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// Endpoint para la Tabla de Clasificación Real
+app.get('/api/clasificacion', async (req, res) => {
+  try {
+    const response = await axios.get('https://site.api.espn.com/apis/v2/sports/soccer/esp.1/standings');
+    const standings = response.data?.children?.[0]?.standings?.entries || [];
+
+    const tabla = standings.map(entry => {
+      const stats = entry.stats || [];
+      const j = stats.find(s => s.name === 'gamesPlayed')?.value ?? 0;
+      const dg = stats.find(s => s.name === 'pointDifferential')?.displayValue ?? '0';
+      const pts = stats.find(s => s.name === 'points')?.value ?? 0;
+
+      return {
+        pos: entry.stats?.find(s => s.name === 'rank')?.value || '•',
+        nombre: entry.team?.displayName,
+        logo: entry.team?.logos?.[0]?.href || null,
+        j: j,
+        dg: dg,
+        pts: pts
+      };
     });
 
+    res.json({ status: 'ok', clasificacion: tabla });
   } catch (error) {
-    console.error('Error en el servidor:', error);
-    res.status(500).json({ status: 'error', message: 'Error interno del servidor' });
+    res.json({ status: 'error', clasificacion: [] });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en puerto ${PORT}`);
-});
-    
-    
+app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
+            
