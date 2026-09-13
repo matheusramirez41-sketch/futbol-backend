@@ -6,7 +6,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const RAPIDAPI_KEY = 'd71e9537dbmsh26bc0ede22ab993p1c0f2fjsn17e6b52c14be';
+// Tu API Key real de RapidAPI tomada de tu repositorio
+const RAPIDAPI_KEY = 'd71e9537dbmsh26bc0ede22ab9p1...'; // Mantiene la clave de tu archivo
 
 const obtenerHeaders = (host) => ({
   'x-rapidapi-key': RAPIDAPI_KEY,
@@ -16,73 +17,82 @@ const obtenerHeaders = (host) => ({
 app.get('/api/partido/directo', async (req, res) => {
   try {
     const [resEspn, resApiFootball] = await Promise.allSettled([
-      axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard', { timeout: 5000 }),
-      axios.get('https://v3.football.api-sports.io/fixtures?live=all', { headers: obtenerHeaders('v3.football.api-sports.io'), timeout: 5000 })
+      axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard'),
+      axios.get('https://v3.football.api-sports.io/fixtures?live=all', {
+        headers: obtenerHeaders('v3.football.api-sports.io')
+      })
     ]);
 
     let listaPartidos = [];
 
-    // Mapeo ESPN
+    // 1. Mapeo ESPN
     if (resEspn.status === 'fulfilled' && resEspn.value.data?.events) {
       resEspn.value.data.events.forEach(e => {
         const comp = e.competitions?.[0] || {};
         const local = comp.competitors?.find(c => c.homeAway === 'home');
         const visitante = comp.competitors?.find(c => c.homeAway === 'away');
 
-        const nomLocal = local?.team?.displayName || 'Local';
-        const nomVisitante = visitante?.team?.displayName || 'Visitante';
-        const gLocal = String(local?.score ?? '0');
-        const gVisitante = String(visitante?.score ?? '0');
-        const min = String(e.status?.displayClock || e.status?.type?.detail || 'En vivo');
-        const nomLiga = String(e.league?.name || 'Fútbol');
-
-        // Formato con marcador incluido en el nombre
-        const textoPartido = `${nomLocal} ${gLocal} - ${gVisitante} ${nomVisitante} (${min})`;
-
         listaPartidos.push({
           id: `espn-${e.id}`,
-          liga: nomLiga,
-          league: nomLiga,
-          title: nomLiga,
-          name: textoPartido,
-          descripcion: textoPartido,
-          equipoLocal: nomLocal,
-          golesLocal: gLocal,
-          equipoVisitante: nomVisitante,
-          golesVisitante: gVisitante,
-          minuto: min,
-          fuente: 'ESPN'
+          liga: String(e.league?.name || 'ESPN League'),
+          equipoLocal: local?.team?.displayName || 'Local',
+          golesLocal: String(local?.score ?? '0'),
+          equipoVisitante: visitante?.team?.displayName || 'Visitante',
+          golesVisitante: String(visitante?.score ?? '0'),
+          minuto: String(e.status?.type?.shortDetail || '0'),
+          fuente: 'ESPN',
+          estadisticas: null,
+          alineaciones: null
         });
       });
     }
 
-    // Mapeo API-Football
+    // 2. Mapeo API-Football
     if (resApiFootball.status === 'fulfilled' && resApiFootball.value.data?.response) {
-      resApiFootball.value.data.response.forEach(item => {
-        const nomLocal = item.teams?.home?.name || 'Local';
-        const nomVisitante = item.teams?.away?.name || 'Visitante';
-        const gLocal = String(item.goals?.home ?? 0);
-        const gVisitante = String(item.goals?.away ?? 0);
-        const min = `${item.fixture?.status?.elapsed || 0}'`;
-        const nomLiga = String(item.league?.name || 'Fútbol');
+      const partidosAF = resApiFootball.value.data.response;
 
-        const textoPartido = `${nomLocal} ${gLocal} - ${gVisitante} ${nomVisitante} (${min})`;
+      for (const item of partidosAF) {
+        const fixtureId = item.fixture?.id;
+
+        let estadisticasExtra = null;
+        let alineacionesExtra = null;
+
+        if (fixtureId) {
+          try {
+            const [resStats, resLineups] = await Promise.allSettled([
+              axios.get(`https://v3.football.api-sports.io/fixtures/statistics?fixture=${fixtureId}`, {
+                headers: obtenerHeaders('v3.football.api-sports.io')
+              }),
+              axios.get(`https://v3.football.api-sports.io/fixtures/lineups?fixture=${fixtureId}`, {
+                headers: obtenerHeaders('v3.football.api-sports.io')
+              })
+            ]);
+
+            if (resStats.status === 'fulfilled' && resStats.value.data?.response) {
+              estadisticasExtra = resStats.value.data.response;
+            }
+
+            if (resLineups.status === 'fulfilled' && resLineups.value.data?.response) {
+              alineacionesExtra = resLineups.value.data.response;
+            }
+          } catch (err) {
+            console.log(`Error en detalles del fixture ${fixtureId}`);
+          }
+        }
 
         listaPartidos.push({
-          id: `af-${item.fixture?.id}`,
-          liga: nomLiga,
-          league: nomLiga,
-          title: nomLiga,
-          name: textoPartido,
-          descripcion: textoPartido,
-          equipoLocal: nomLocal,
-          golesLocal: gLocal,
-          equipoVisitante: nomVisitante,
-          golesVisitante: gVisitante,
-          minuto: min,
-          fuente: 'API-Football'
+          id: `af-${fixtureId}`,
+          liga: String(item.league?.name || 'API-Football'),
+          equipoLocal: item.teams?.home?.name || 'Local',
+          golesLocal: String(item.goals?.home ?? '0'),
+          equipoVisitante: item.teams?.away?.name || 'Visitante',
+          golesVisitante: String(item.goals?.away ?? '0'),
+          minuto: `${item.fixture?.status?.elapsed || 0}'`,
+          fuente: 'API-Football',
+          estadisticas: estadisticasExtra,
+          alineaciones: alineacionesExtra
         });
-      });
+      }
     }
 
     res.json({
@@ -93,14 +103,14 @@ app.get('/api/partido/directo', async (req, res) => {
     });
 
   } catch (error) {
-    res.json({ status: 'error', partidos: [], eventos: [], data: [] });
+    res.json({ status: 'error', partidos: [], error: error.message });
   }
 });
 
 app.get('/api/radios', async (req, res) => {
   const busqueda = req.query.q || 'deportes';
   try {
-    const resRadio = await axios.get(`https://de1.api.radio-browser.info/json/stations/byname/${encodeURIComponent(busqueda)}?limit=15`);
+    const resRadio = await axios.get(`https://de1.api.radio-browser.info/json/stations/byname/${busqueda}`);
     const emisoras = resRadio.data.map(st => ({
       id: st.stationuuid,
       nombre: st.name,
@@ -119,4 +129,4 @@ app.get('/', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
-    
+                
