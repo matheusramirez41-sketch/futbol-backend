@@ -6,122 +6,120 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Tu clave de API-Football recuperada con éxito
-const RAPIDAPI_KEY = 'D71e9537dbmsh26bc0ede22ab9p14b609jsn18ae6cfebc32';
-const RAPIDAPI_HOST = 'v3.football.api-sports.io';
-
-const headers = {
-  'x-rapidapi-key': RAPIDAPI_KEY,
-  'x-rapidapi-host': RAPIDAPI_HOST
-};
-
-const formatearHora = (fechaIso) => {
-  if (!fechaIso) return 'Por empezar';
-  const fecha = new Date(fechaIso);
-  return fecha.toLocaleTimeString('es-ES', { 
-    hour: '2-digit', 
-    minute: '2-digit', 
-    hour12: true 
-  });
-};
-
-const traducirEstado = (estadoShort, fechaIso) => {
-  if (!estadoShort) return 'En vivo';
-  if (['FT', 'AET', 'PEN'].includes(estadoShort)) return 'Finalizado';
-  if (['HT'].includes(estadoShort)) return 'Entretiempo';
-  if (['1H', '2H', 'ET'].includes(estadoShort)) return estadoShort;
-  if (['NS', 'TBD'].includes(estadoShort)) return formatearHora(fechaIso);
-  return estadoShort;
-};
-
 app.get('/api/partido/directo', async (req, res) => {
   try {
-    const hoy = new Date().toISOString().split('T')[0];
+    const response = await axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard');
+    const eventos = response.data?.events || [];
     
-    const response = await axios.get(`https://v3.football.api-sports.io/fixtures?date=${hoy}`, { headers });
-    const fixtures = response.data?.response || [];
     let listaPartidos = [];
 
-    for (const fixture of fixtures) {
-      const matchId = fixture.fixture.id;
-      const estadoShort = fixture.fixture.status.short;
-      const fechaIso = fixture.fixture.date;
+    for (const evento of eventos) {
+      const competencia = evento.competitions?.[0] || {};
+      const id = evento.id;
+      const ligaInfo = evento.leagues?.[0] || evento.season || {};
+      const nombreLiga = ligaInfo.name || evento.name || 'Fútbol';
+      const estadoDetalle = competencia.status?.type?.detail || 'En vivo';
+
+      const competitors = competencia.competitors || [];
+      const local = competitors.find(c => c.homeAway === 'home') || competitors[0] || {};
+      const visitante = competitors.find(c => c.homeAway === 'away') || competitors[1] || {};
 
       let hechosDetallados = [];
-      let alineacionLocal = null;
-      let alineacionVisitante = null;
+      let estadisticasLocal = [];
+      let estadisticasVisitante = [];
 
-      if (!['NS', 'TBD'].includes(estadoShort)) {
-        try {
-          // --- EVENTOS / GOLES / TARJETAS ---
-          const resEvents = await axios.get(`https://v3.football.api-sports.io/fixtures/events?fixture=${matchId}`, { headers });
-          hechosDetallados = (resEvents.data?.response || []).map(ev => ({
-            minuto: `${ev.time.elapsed}${ev.time.extra ? '+' + ev.time.extra : ''}`,
-            tipo: ev.type === 'Goal' ? 'Gol' : ev.type === 'Card' ? (ev.detail.includes('Yellow') ? 'Tarjeta amarilla' : 'Tarjeta roja') : 'Momento destacable',
-            jugador: ev.player?.name || '',
-            equipo: ev.team?.name || '',
-            fotoJugador: null,
-            comentario: `${ev.type}: ${ev.player?.name || ''} (${ev.detail || ''})`
+      // 1. Extrayendo jugadas, goles, tarjetas y comentarios detallados
+      if (competencia.details && Array.isArray(competencia.details)) {
+        hechosDetallados = competencia.details.map(det => ({
+          minuto: det.clock?.displayValue ? `${det.clock.displayValue}'` : (det.time?.elapsed ? `${det.time.elapsed}'` : ''),
+          tipo: det.type?.text || det.qualifiers?.[0] || 'Momento destacable',
+          jugador: det.athletesInvolved?.[0]?.displayName || det.player?.name || '',
+          equipo: det.team?.displayName || '',
+          fotoJugador: det.athletesInvolved?.[0]?.headshot || null,
+          comentario: det.text || det.headline || ''
+        }));
+      }
+
+      // 2. Extrayendo estadísticas del partido (posesión, tiros al arco, faltas, etc.)
+      if (competencia.situation && competencia.situation.statistics) {
+        // Algunas estructuras de ESPN devuelven estadísticas aquí
+      }
+      
+      // Si la competencia trae un resumen por equipos con estadísticas completas
+      if (competitors.length > 0) {
+        if (local.statistics && Array.isArray(local.statistics)) {
+          estadisticasLocal = local.statistics.map(stat => ({
+            nombre: stat.name || stat.label,
+            valor: stat.displayValue || stat.value
           }));
+        }
+        if (visitante.statistics && Array.isArray(visitante.statistics)) {
+          estadisticasVisitante = visitante.statistics.map(stat => ({
+            nombre: stat.name || stat.label,
+            valor: stat.displayValue || stat.value
+          }));
+        }
+      }
 
-          // --- ALINEACIONES ---
-          const resLineups = await axios.get(`https://v3.football.api-sports.io/fixtures/lineups?fixture=${matchId}`, { headers });
-          const lineups = resLineups.data?.response || [];
+      // 3. Extrayendo alineaciones completas (titulares y suplentes)
+      let alineacionLocalData = null;
+      let alineacionVisitanteData = null;
 
-          const lLocal = lineups.find(l => l.team.id === fixture.teams.home.id);
-          const lVisitante = lineups.find(l => l.team.id === fixture.teams.away.id);
+      if (competencia.rosters && Array.isArray(competencia.rosters)) {
+        const rLocal = competencia.rosters.find(r => r.team?.id === local.team?.id);
+        const rVisitante = competencia.rosters.find(r => r.team?.id === visitante.team?.id);
 
-          if (lLocal) {
-            alineacionLocal = {
-              formacion: lLocal.formation || '',
-              titulares: (lLocal.startXI || []).map(p => ({
-                nombre: p.player.name,
-                numero: p.player.number,
-                posicion: p.player.pos
-              })),
-              suplentes: (lLocal.substitutes || []).map(p => ({
-                nombre: p.player.name,
-                numero: p.player.number,
-                posicion: p.player.pos
-              }))
-            };
-          }
+        if (rLocal) {
+          alineacionLocalData = {
+            formacion: rLocal.formation || '4-3-3',
+            titulares: (rLocal.roster || []).filter(p => p.starter).map(p => ({
+              nombre: p.athlete?.displayName || '',
+              numero: p.jersey || '',
+              posicion: p.position?.abbreviation || ''
+            })),
+            suplentes: (rLocal.roster || []).filter(p => !p.starter).map(p => ({
+              nombre: p.athlete?.displayName || '',
+              numero: p.jersey || '',
+              posicion: p.position?.abbreviation || ''
+            }))
+          };
+        }
 
-          if (lVisitante) {
-            alineacionVisitante = {
-              formacion: lVisitante.formation || '',
-              titulares: (lVisitante.startXI || []).map(p => ({
-                nombre: p.player.name,
-                numero: p.player.number,
-                posicion: p.player.pos
-              })),
-              suplentes: (lVisitante.substitutes || []).map(p => ({
-                nombre: p.player.name,
-                numero: p.player.number,
-                posicion: p.player.pos
-              }))
-            };
-          }
-
-        } catch (e) {
-          // Ignorar si un partido específico falla al traer detalles
+        if (rVisitante) {
+          alineacionVisitanteData = {
+            formacion: rVisitante.formation || '4-3-3',
+            titulares: (rVisitante.roster || []).filter(p => p.starter).map(p => ({
+              nombre: p.athlete?.displayName || '',
+              numero: p.jersey || '',
+              posicion: p.position?.abbreviation || ''
+            })),
+            suplentes: (rVisitante.roster || []).filter(p => !p.starter).map(p => ({
+              nombre: p.athlete?.displayName || '',
+              numero: p.jersey || '',
+              posicion: p.position?.abbreviation || ''
+            }))
+          };
         }
       }
 
       listaPartidos.push({
-        id: `api-football-${matchId}`,
-        liga: fixture.league?.name || 'Fútbol',
-        equipoLocal: fixture.teams.home.name,
-        logoLocal: fixture.teams.home.logo,
-        golesLocal: String(fixture.goals.home ?? '0'),
-        equipoVisitante: fixture.teams.away.name,
-        logoVisitante: fixture.teams.away.logo,
-        golesVisitante: String(fixture.goals.away ?? '0'),
-        minuto: traducirEstado(estadoShort, fechaIso),
+        id: `espn-${id}`,
+        liga: nombreLiga,
+        equipoLocal: local.team?.displayName || 'Local',
+        logoLocal: local.team?.logo || '',
+        golesLocal: String(local.score ?? '0'),
+        equipoVisitante: visitante.team?.displayName || 'Visitante',
+        logoVisitante: visitante.team?.logo || '',
+        golesVisitante: String(visitante.score ?? '0'),
+        minuto: estadoDetalle,
         hechos: hechosDetallados,
+        estadisticas: {
+          local: estadisticasLocal,
+          visitante: estadisticasVisitante
+        },
         alineaciones: {
-          local: alineacionLocal,
-          visitante: alineacionVisitante
+          local: alineacionLocalData,
+          visitante: alineacionVisitanteData
         }
       });
     }
@@ -134,4 +132,3 @@ app.get('/api/partido/directo', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
-                                    
