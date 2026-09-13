@@ -6,14 +6,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'd71e9537dbmsh26bc0ede22ab9p14b609jsn18ae6cfebc32';
-
-const obtenerHeaders = (host) => ({
-  'x-rapidapi-key': RAPIDAPI_KEY,
-  'x-rapidapi-host': host
-});
-
-// Función auxiliar para traducir el estado del partido
 const traducirEstado = (estadoRaw) => {
   if (!estadoRaw) return 'En vivo';
   const e = estadoRaw.toUpperCase();
@@ -21,13 +13,10 @@ const traducirEstado = (estadoRaw) => {
   if (e.includes('HT') || e.includes('HALFTIME')) return 'Entretiempo';
   if (e.includes('1H')) return '1ª Parte';
   if (e.includes('2H')) return '2ª Parte';
-  if (e.includes('POSTPONED')) return 'Aplazado';
-  if (e.includes('CANCELLED')) return 'Cancelado';
   if (e.includes('SCHEDULED') || e.includes('PRE')) return 'Por empezar';
   return estadoRaw;
 };
 
-// Función para formatear el nombre de la liga
 const formatearLiga = (nombre) => {
   if (!nombre) return 'Liga';
   let limpia = nombre.replace(/\d{4}-\d{2,4}-?/g, '').replace(/-/g, ' ').trim();
@@ -37,35 +26,53 @@ const formatearLiga = (nombre) => {
   return limpia.charAt(0).toUpperCase() + limpia.slice(1);
 };
 
-// Endpoint de Partidos en Directo
+// Endpoint de Partidos en Directo con Narración Completa
 app.get('/api/partido/directo', async (req, res) => {
   try {
-    const [resEspn, resApiFootball] = await Promise.allSettled([
-      // Se añade lang=es para solicitar respuestas en español
-      axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?lang=es'),
-      axios.get('https://v3.football.api-sports.io/fixtures?live=all', {
-        headers: obtenerHeaders('v3.football.api-sports.io')
-      })
-    ]);
-
+    const resEspn = await axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?lang=es');
     let listaPartidos = [];
 
-    if (resEspn.status === 'fulfilled' && resEspn.value.data?.events) {
-      resEspn.value.data.events.forEach(e => {
+    if (resEspn.status === 200 && resEspn.data?.events) {
+      for (const e of resEspn.data.events) {
         const comp = e.competitions?.[0] || {};
         const local = comp.competitors?.find(c => c.homeAway === 'home');
         const visitante = comp.competitors?.find(c => c.homeAway === 'away');
 
-        const hechos = (comp.details || []).map(det => ({
-          minuto: det.clock?.displayValue || '•',
-          tipo: det.type?.text || 'Incidencia',
-          jugador: det.athletesIn?.[0]?.displayName || det.team?.displayName || '',
-          equipo: det.team?.displayName || '',
-          fotoJugador: det.athletesIn?.[0]?.headshot?.href || null,
-          comentario: det.text || `${det.type?.text || 'Evento'} registrado en el partido.`
-        }));
+        let hechosDetallados = [];
 
-        const minDetalle = e.status?.type?.shortDetail || e.status?.type?.detail || '';
+        try {
+          const resDetalle = await axios.get(`https://site.api.espn.com/apis/site/v2/sports/soccer/all/summary?event=${e.id}&lang=es`);
+          const plays = resDetalle.data?.commentary || resDetalle.data?.plays || [];
+
+          hechosDetallados = plays.map(p => {
+            const texto = p.text || p.description || '';
+            let tipoEvento = 'Momento destacable';
+            
+            if (texto.toLowerCase().includes('tarjeta amarilla')) tipoEvento = 'Tarjeta amarilla';
+            else if (texto.toLowerCase().includes('tarjeta roja')) tipoEvento = 'Tarjeta roja';
+            else if (texto.toLowerCase().includes('¡gol!') || texto.toLowerCase().includes('gol de')) tipoEvento = 'Gol';
+            else if (texto.toLowerCase().includes('descanso') || texto.toLowerCase().includes('final del primer tiempo')) tipoEvento = 'Descanso';
+            else if (texto.toLowerCase().includes('resumen')) tipoEvento = 'Resumen';
+
+            return {
+              minuto: p.clock?.displayValue || p.time?.displayValue || '•',
+              tipo: tipoEvento,
+              jugador: p.athletesIn?.[0]?.displayName || p.athlete?.displayName || '',
+              equipo: p.team?.displayName || '',
+              fotoJugador: p.athletesIn?.[0]?.headshot?.href || p.athlete?.headshot?.href || null,
+              comentario: texto
+            };
+          });
+        } catch (err) {
+          hechosDetallados = (comp.details || []).map(det => ({
+            minuto: det.clock?.displayValue || '•',
+            tipo: det.type?.text || 'Incidencia',
+            jugador: det.athletesIn?.[0]?.displayName || det.team?.displayName || '',
+            equipo: det.team?.displayName || '',
+            fotoJugador: det.athletesIn?.[0]?.headshot?.href || null,
+            comentario: det.text || `${det.type?.text || 'Evento'} registrado.`
+          }));
+        }
 
         listaPartidos.push({
           id: `espn-${e.id}`,
@@ -76,46 +83,14 @@ app.get('/api/partido/directo', async (req, res) => {
           equipoVisitante: visitante?.team?.displayName || 'Visitante',
           logoVisitante: visitante?.team?.logo || null,
           golesVisitante: String(visitante?.score ?? '0'),
-          minuto: traducirEstado(minDetalle),
-          fuente: 'ESPN',
-          hechos: hechos,
+          minuto: traducirEstado(e.status?.type?.shortDetail || e.status?.type?.detail),
+          hechos: hechosDetallados,
           estadisticas: (local?.statistics && visitante?.statistics) ? [
             { statistics: local.statistics.map(s => ({ type: s.label || s.name, value: s.displayValue || s.value })) },
             { statistics: visitante.statistics.map(s => ({ type: s.label || s.name, value: s.displayValue || s.value })) }
           ] : null
         });
-      });
-    }
-
-    if (resApiFootball.status === 'fulfilled' && resApiFootball.value.data?.response) {
-      resApiFootball.value.data.response.forEach(item => {
-        const fixtureId = item.fixture?.id;
-        const hechos = (item.events || []).map(ev => ({
-          minuto: `${ev.time?.elapsed || ''}'`,
-          tipo: ev.type || 'Evento',
-          jugador: ev.player?.name || '',
-          equipo: ev.team?.name || '',
-          fotoJugador: null,
-          comentario: `${ev.type} de ${ev.player?.name || 'jugador'} (${ev.team?.name || ''})`
-        }));
-
-        const estadoShort = item.fixture?.status?.short;
-
-        listaPartidos.push({
-          id: `af-${fixtureId}`,
-          liga: formatearLiga(item.league?.name),
-          equipoLocal: item.teams?.home?.name || 'Local',
-          logoLocal: item.teams?.home?.logo || null,
-          golesLocal: String(item.goals?.home ?? '0'),
-          equipoVisitante: item.teams?.away?.name || 'Visitante',
-          logoVisitante: item.teams?.away?.logo || null,
-          golesVisitante: String(item.goals?.away ?? '0'),
-          minuto: traducirEstado(estadoShort) === 'En vivo' ? `${item.fixture?.status?.elapsed || 0}'` : traducirEstado(estadoShort),
-          fuente: 'API-Football',
-          hechos: hechos,
-          estadisticas: null
-        });
-      });
+      }
     }
 
     res.json({ status: 'ok', partidos: listaPartidos });
@@ -124,7 +99,7 @@ app.get('/api/partido/directo', async (req, res) => {
   }
 });
 
-// Endpoint para la Tabla de Clasificación Real
+// Endpoint de Clasificación
 app.get('/api/clasificacion', async (req, res) => {
   try {
     const response = await axios.get('https://site.api.espn.com/apis/v2/sports/soccer/esp.1/standings?lang=es');
@@ -132,17 +107,13 @@ app.get('/api/clasificacion', async (req, res) => {
 
     const tabla = standings.map(entry => {
       const stats = entry.stats || [];
-      const j = stats.find(s => s.name === 'gamesPlayed')?.value ?? 0;
-      const dg = stats.find(s => s.name === 'pointDifferential')?.displayValue ?? '0';
-      const pts = stats.find(s => s.name === 'points')?.value ?? 0;
-
       return {
-        pos: entry.stats?.find(s => s.name === 'rank')?.value || '•',
+        pos: stats.find(s => s.name === 'rank')?.value || '•',
         nombre: entry.team?.displayName,
         logo: entry.team?.logos?.[0]?.href || null,
-        j: j,
-        dg: dg,
-        pts: pts
+        j: stats.find(s => s.name === 'gamesPlayed')?.value ?? 0,
+        dg: stats.find(s => s.name === 'pointDifferential')?.displayValue ?? '0',
+        pts: stats.find(s => s.name === 'points')?.value ?? 0
       };
     });
 
@@ -154,4 +125,3 @@ app.get('/api/clasificacion', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
-  
