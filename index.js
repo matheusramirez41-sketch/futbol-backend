@@ -28,7 +28,6 @@ app.get('/api/partido/directo', async (req, res) => {
       let estadisticasLocal = [];
       let estadisticasVisitante = [];
 
-      // 1. Extrayendo jugadas, goles, tarjetas y comentarios detallados
       if (competencia.details && Array.isArray(competencia.details)) {
         hechosDetallados = competencia.details.map(det => ({
           minuto: det.clock?.displayValue ? `${det.clock.displayValue}'` : (det.time?.elapsed ? `${det.time.elapsed}'` : ''),
@@ -40,30 +39,22 @@ app.get('/api/partido/directo', async (req, res) => {
         }));
       }
 
-      // 2. Extrayendo estadísticas del partido (posesión, tiros al arco, faltas, etc.)
-      if (competencia.situation && competencia.situation.statistics) {
-        // Algunas estructuras de ESPN devuelven estadísticas aquí
-      }
-      
-      // Si la competencia trae un resumen por equipos con estadísticas completas
-      if (competitors.length > 0) {
-        if (local.statistics && Array.isArray(local.statistics)) {
-          estadisticasLocal = local.statistics.map(stat => ({
-            nombre: stat.name || stat.label,
-            valor: stat.displayValue || stat.value
-          }));
-        }
-        if (visitante.statistics && Array.isArray(visitante.statistics)) {
-          estadisticasVisitante = visitante.statistics.map(stat => ({
-            nombre: stat.name || stat.label,
-            valor: stat.displayValue || stat.value
-          }));
-        }
+      if (local.statistics && Array.isArray(local.statistics)) {
+        estadisticasLocal = local.statistics.map(stat => ({
+          nombre: stat.name || stat.label || 'Estadística',
+          valor: stat.displayValue || stat.value || '0'
+        }));
       }
 
-      // 3. Extrayendo alineaciones completas (titulares y suplentes)
-      let alineacionLocalData = null;
-      let alineacionVisitanteData = null;
+      if (visitante.statistics && Array.isArray(visitante.statistics)) {
+        estadisticasVisitante = visitante.statistics.map(stat => ({
+          nombre: stat.name || stat.label || 'Estadística',
+          valor: stat.displayValue || stat.value || '0'
+        }));
+      }
+
+      let alineacionLocalData = { formacion: '4-3-3', titulares: [], suplentes: [] };
+      let alineacionVisitanteData = { formacion: '4-3-3', titulares: [], suplentes: [] };
 
       if (competencia.rosters && Array.isArray(competencia.rosters)) {
         const rLocal = competencia.rosters.find(r => r.team?.id === local.team?.id);
