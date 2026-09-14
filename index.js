@@ -6,16 +6,23 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'd71e9537dbmsh26bc0ede22ab9p1';
+// TU CLAVE COMPLETA DE RAPIDAPI
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'D71e9537dbmsh26bc0ede22ab993p1c0f2fjsn17e6b52c14be';
 
-// Función para formatear horas a horario local (12h)
+// Helper para headers de RapidAPI
+const getRapidApiHeaders = (host) => ({
+  'x-rapidapi-key': RAPIDAPI_KEY,
+  'x-rapidapi-host': host
+});
+
+// Helper para dar formato de 12 horas a las fechas (Ej: "03:30 PM")
 const formatearHora = (fechaISO) => {
   if (!fechaISO) return 'Por definir';
   const fecha = new Date(fechaISO);
   return fecha.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', hour12: true });
 };
 
-// 1. PARTIDOS EN DIRECTO Y AGENDA POR FECHA (ESPN + Escudos enriquecidos)
+// 1. RUTA PRINCIPAL: PARTIDOS POR FECHA / DIRECTO (ESPN + Formato completo)
 app.get('/api/partido/directo', async (req, res) => {
   try {
     const fechaParam = req.query.fecha; // Formato YYYYMMDD opcional
@@ -38,7 +45,6 @@ app.get('/api/partido/directo', async (req, res) => {
       const local = competitors.find(c => c.homeAway === 'home') || competitors[0] || {};
       const visitante = competitors.find(c => c.homeAway === 'away') || competitors[1] || {};
 
-      // Si no ha empezado, mostramos la hora asignada
       let tiempoDisplay = 'Programado';
       if (esEnVivo) {
         tiempoDisplay = estadoInfo.detail || 'En Vivo';
@@ -57,20 +63,20 @@ app.get('/api/partido/directo', async (req, res) => {
         equipoVisitante: visitante.team?.displayName || 'Visitante',
         logoVisitante: visitante.team?.logo || 'https://media.api-sports.io/football/teams/default.png',
         golesVisitante: String(visitante.score ?? '0'),
-        estado: estadoInfo.state, // 'pre', 'in', 'post'
+        estado: estadoInfo.state, // 'pre' (programado), 'in' (en vivo), 'post' (finalizado)
         minutoDisplay: tiempoDisplay,
         minutoTranscurrido: estadoInfo.clock || 0,
         fechaInicioISO: evento.date
       });
     }
 
-    res.json({ status: 'ok', partidos: listaPartidos });
+    res.json({ status: 'ok', fuente: 'ESPN', partidos: listaPartidos });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
-// 2. DETALLE "SUPER DIRECTO" (Jugada a jugada hasta el evento más mínimo)
+// 2. DETALLE "SUPER DIRECTO": CADA JUGADA AL DETALLE (ESPN)
 app.get('/api/partido/detalle/:id', async (req, res) => {
   try {
     const id = req.params.id.replace('espn-', '');
@@ -90,21 +96,68 @@ app.get('/api/partido/detalle/:id', async (req, res) => {
   }
 });
 
-// 3. FUENTES COMPLEMENTARIAS (FotMob / RapidAPI para respaldo de escudos/datos)
+// 3. RESPALDO MULTIFUENTE (API-Football / RapidAPI)
+app.get('/api/fuente/api-football', async (req, res) => {
+  try {
+    const response = await axios.get('https://api-football-v1.p.rapidapi.com/v3/fixtures?live=all', {
+      headers: getRapidApiHeaders('api-football-v1.p.rapidapi.com')
+    });
+    res.json({ status: 'ok', fuente: 'API-Football', datos: response.data.response });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// 4. RESPALDO FOTMOB (RapidAPI)
 app.get('/api/fuente/fotmob', async (req, res) => {
   try {
     const response = await axios.get('https://fotmob-api.p.rapidapi.com/matches/live', {
-      headers: {
-        'x-rapidapi-key': RAPIDAPI_KEY,
-        'x-rapidapi-host': 'fotmob-api.p.rapidapi.com'
-      }
+      headers: getRapidApiHeaders('fotmob-api.p.rapidapi.com')
     });
-    res.json({ status: 'ok', datos: response.data });
+    res.json({ status: 'ok', fuente: 'FotMob', datos: response.data });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// 5. TABLA DE POSICIONES POR LIGA
+app.get('/api/posiciones/:liga', async (req, res) => {
+  try {
+    const { liga } = req.params;
+    const response = await axios.get(`https://site.api.espn.com/apis/site/v2/sports/soccer/${liga}/standings`);
+    
+    const tabla = response.data?.children?.[0]?.standings?.entries?.map(equipo => ({
+      posicion: equipo.stats.find(s => s.name === 'rank')?.displayValue || '',
+      nombre: equipo.team?.name || '',
+      logo: equipo.team?.logos?.[0]?.href || '',
+      puntos: equipo.stats.find(s => s.name === 'points')?.displayValue || '0',
+      partidosJugados: equipo.stats.find(s => s.name === 'gamesPlayed')?.displayValue || '0',
+    })) || [];
+
+    res.json({ status: 'ok', liga: response.data?.name, tabla });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// 6. NOTICIAS
+app.get('/api/noticias', async (req, res) => {
+  try {
+    const response = await axios.get('https://site.api.espn.com/apis/site/v2/sports/soccer/all/news');
+    const noticias = (response.data?.articles || []).map(noticia => ({
+      titular: noticia.headline || '',
+      descripcion: noticia.description || '',
+      imagen: noticia.images?.[0]?.url || '',
+      enlace: noticia.links?.web?.href || ''
+    }));
+
+    res.json({ status: 'ok', noticias });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
-      
+app.listen(PORT, () => console.log(`Servidor multicapa activo en puerto ${PORT}`));
+  
+        
